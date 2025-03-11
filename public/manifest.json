@@ -17,7 +17,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["connect-web-interceptor.js"],
+      "resources": ["connect-web-interceptor.js", "grpc-web-interceptor.js"],
       "matches": ["<all_urls>"]
     }
   ],
@@ -29,6 +29,6 @@
       "all_frames": true
     }
   ],
-  "permissions": ["scripting"],
+  "permissions": ["scripting", "tabs"],
   "host_permissions": ["<all_urls>"]
 }
