@@ -9,21 +9,38 @@
 // connections[1].panel => panel port
 // connections[1].content => content port
 let connections = {};
+let pendingMessages = {};
 
-// Need to set up listeners when the service worker starts
-self.onconnect = function(event) {
-  const port = event.ports[0];
-  port.start();
-};
+// Keep track of registered tabs for content script injection
+let registeredTabs = new Set();
 
-// Listen for connection attempts from devtools panel and content scripts
+// Listen for when a tab is updated
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  // Only react to complete navigation events
+  if (changeInfo.status === 'complete' && tab.url.startsWith('http')) {
+    // Register this tab if we haven't seen it before
+    if (!registeredTabs.has(tabId)) {
+      registeredTabs.add(tabId);
+
+      // Re-inject content script to ensure it's running
+      chrome.scripting.executeScript({
+        target: { tabId: tabId },
+        files: ['content-script.js']
+      }).catch(error => {
+        console.error(`Error injecting content script: ${error}`);
+      });
+    }
+  }
+});
+
+// When a connection is made from either panel or content script
 chrome.runtime.onConnect.addListener(port => {
   if (port.name != "panel" && port.name != "content") {
     return;
   }
 
   const extensionListener = message => {
-    const tabId = port.sender.tab && port.sender.tab.id >= 0 ? port.sender.tab.id : message.tabId;
+    const tabId = port.sender?.tab?.id >= 0 ? port.sender.tab.id : message.tabId;
 
     // The original connection event doesn't include the tab ID of the
     // DevTools page, so we need to send it explicitly (attached
@@ -31,8 +48,17 @@ chrome.runtime.onConnect.addListener(port => {
     if (message.action == "init") {
       if (!connections[tabId]) {
         connections[tabId] = {};
+        pendingMessages[tabId] = [];
       }
       connections[tabId][port.name] = port;
+
+      // If there are any pending messages for this tab, process them now
+      if (port.name === "panel" && pendingMessages[tabId]?.length > 0) {
+        for (const pendingMsg of pendingMessages[tabId]) {
+          port.postMessage(pendingMsg);
+        }
+        pendingMessages[tabId] = [];
+      }
       return;
     }
 
@@ -42,6 +68,12 @@ chrome.runtime.onConnect.addListener(port => {
       const conn = connections[tabId]?.[message.target];
       if (conn) {
         conn.postMessage(message);
+      } else if (message.target === "panel") {
+        // If panel isn't connected yet, store the message for later
+        if (!pendingMessages[tabId]) {
+          pendingMessages[tabId] = [];
+        }
+        pendingMessages[tabId].push(message);
       }
     }
   };
@@ -62,6 +94,7 @@ chrome.runtime.onConnect.addListener(port => {
         // from the connections map.
         if (Object.keys(connections[tabs[i]]).length === 0) {
           delete connections[tabs[i]];
+          delete pendingMessages[tabs[i]];
         }
         break;
       }
@@ -71,6 +104,41 @@ chrome.runtime.onConnect.addListener(port => {
 
 // Keep service worker alive
 self.addEventListener('activate', event => {
-  // This ensures the service worker doesn't terminate too early
   event.waitUntil(clients.claim());
+});
+
+// Handle messages from content scripts even when service worker wasn't active
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === "registerTab") {
+    const tabId = sender.tab.id;
+    registeredTabs.add(tabId);
+    sendResponse({success: true});
+    return true;
+  }
+
+  // Handle gRPC network calls that come before a connection is established
+  if (message.action === "gRPCNetworkCall") {
+    const tabId = sender.tab.id;
+
+    // Store the message if panel isn't connected yet
+    if (!connections[tabId]?.panel) {
+      if (!pendingMessages[tabId]) {
+        pendingMessages[tabId] = [];
+      }
+      pendingMessages[tabId].push({
+        action: "gRPCNetworkCall",
+        target: "panel",
+        data: message.data
+      });
+    } else {
+      // Forward to panel if connected
+      connections[tabId].panel.postMessage({
+        action: "gRPCNetworkCall",
+        target: "panel",
+        data: message.data
+      });
+    }
+    sendResponse({success: true});
+    return true;
+  }
 });
