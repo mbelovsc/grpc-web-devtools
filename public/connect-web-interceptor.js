@@ -20,8 +20,7 @@ async function* readMessage(req, stream) {
 
 /**
  * This interceptor will be passed every request and response. We will take that request and response
- * and post a message to the window. This will allow us to access this message in the content script. This
- * is all to make the manifest v3 happy.
+ * and post a message to the window. This will allow us to access this message in the content script.
  */
 const interceptor = (next) => async (req) => {
   try {
@@ -57,11 +56,12 @@ const interceptor = (next) => async (req) => {
   }
 };
 
+// Expose the interceptor to the window
 window.__CONNECT_WEB_DEVTOOLS__ = interceptor;
 
 /**
- * Since we are loading inject.js as a script, the order at which it is loaded is not guaranteed.
- * So we will publish a custom event that can be used, to be used to assign the interceptor.
+ * Since we are loading this script as a web accessible resource in Manifest V3,
+ * we need to use a custom event to signal when the interceptor is ready.
  */
 const readyEvent = new CustomEvent("connect-web-dev-tools-ready");
 window.dispatchEvent(readyEvent);
